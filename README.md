@@ -1,3 +1,5 @@
-# Clog Loss: Detecting clogged blood vessels with AI
+# ClogCatcher: Detecting clogged blood vessels with AI
 
-More than 5 million Americans are living with Alzheimer's disease (
+Recent work in the [Schaffer-Nishimura lab](https://snlab.bme.cornell.edu/index.php) at Cornell has shown a link between "stalls" - clogged blood vessels in the brain - and Alzheimer's, the 7th biggest killer in the world. A citizen science project called [Stall Catchers](https://stallcatchers.com/main) has been identifying stalled vessels in microscope videos taken from the brains of mouse models. Here, I use neural nets attempt to predict whether a vessel is stalled as part of the [Clog Loss challenge](https://www.drivendata.org/competitions/65/clog-loss-alzheimers-research/page/207/) through DrivenData.
+
+Currently, a `ClogData` class is implemented that allows retrieval of the train and testing data from an Amazon S3 bucket. Two networks are attempted: both use a CNN (either a custom-trained [convolutional autoencoder](https://github.com/jmmanley/conv-autoencoder) or pre-trained VGG16 model) to extract features from the series of images of each vessel, and then uses an LSTM in a many-to-one fashion for binary classification. See the jupyter notebooks for examples.
