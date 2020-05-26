@@ -9,20 +9,37 @@ from tqdm import tqdm
 import numpy as np
 import pandas as pd
 import cv2
-from skimage.transform import resize
 import boto3
+import warnings
 
 class ClogData:
 	"""
 	Prepares train/test data and holds metadata for clog loss challenge
-	For more information on data, see https://www.drivendata.org/competitions/65/clog-loss-alzheimers-research/page/217/
-	Download links retrieved from https://www.drivendata.org/competitions/65/clog-loss-alzheimers-research/data/
+	For more information on data, see:
+	https://www.drivendata.org/competitions/65/clog-loss-alzheimers-research/page/217/
+	Download links retrieved from:
+	https://www.drivendata.org/competitions/65/clog-loss-alzheimers-research/data/
+
+	Size = 'nano', 'micro', or 'full' specifies which pre-defined training set
+	size to load (for details, see the DrivenData documentation).
+	If toDisk=True, all the movies are automatically downloaded and cropped to
+	img_size.
+	For 'nano' and 'micro', because the datasets are small, both the full and
+	cropped videos are kept.
+
+	METHODS:
+	ClogData.crop_videos(vids=self.vids) crops either the videos in self.vids (default)
+	or specified input videos.
+	ClogData.load(index, train=True, ret=True) loads and returns row index
+	of the the training dataset, downloading from the AWS S3 bucket if necessary.
+	ClogData.load_train(ret=True) loads and returns the entire training set.
 	"""
 
-	def __init__(self, path, size='nano'):
+	def __init__(self, path, size='nano', img_size=(224,224), toDisk=True):
 		self.base_path = path
 		self.size = size
 		self.path = os.path.join(path, size)
+		self.img_size = img_size
 
 		# LOAD METADATA
 		for url in ['https://s3.amazonaws.com/drivendata-prod/data/65/public/train_metadata.csv',
@@ -38,7 +55,7 @@ class ClogData:
 			os.mkdir(os.path.join(self.base_path, 'test'))
 
 		# IF NANO/MICRO, DOWNLOAD VIDEOS
-		if size == 'nano' or size =='micro':
+		if (size == 'nano' or size =='micro') and toDisk:
 			if not os.path.exists(self.path):
 				print('DOWNLOADING AND EXTRACTING', size, 'DATA...')
 
@@ -56,28 +73,30 @@ class ClogData:
 
 			self.vids = glob.glob(os.path.join(self.path, '*.mp4'))
 
+			self.crop_videos()
+
 			self.train = self.train.groupby(size).get_group(True)
 
 		elif size == 'full':
-			if not os.path.exists(self.path):
-				print('DOWNLOADING AND EXTRACTING', size, 'DATA...')
-
-				os.mkdir(self.path)
+			if toDisk:
+				if not os.path.exists(self.path): os.mkdir(self.path)
 
 				self.load_train(ret=False)
-
 				self.vids = glob.glob(os.path.join(self.path, '*_cropped.mp4'))
 
 		else:
 			print("ERROR: size must be 'nano', 'micro', or 'full'")
 			raise
 
-	def crop_videos(self, out_size=(224,224), force=False, vids=None):
+
+	def crop_videos(self, force=False, vids=None):
 		"""Crops videos in self.vids around ROIs and resize."""
+		#TODO: should this be a method of ClogData?
+		#      only useful if self.vids is modified by user?
 
 		if vids is None: vids = self.vids
 
-		print('CROPPING ALL VIDEOS TO SIZE ', out_size, '...')
+		print('CROPPING ALL VIDEOS TO SIZE ', self.img_size, '...')
 
 		for vid in tqdm(vids, file=sys.stdout):
 			noext = os.path.splitext(vid)[0]
@@ -93,10 +112,10 @@ class ClogData:
 
 					fourcc = cv2.VideoWriter_fourcc(*'mp4v')
 					hz = 10 # frame rate
-					vw = cv2.VideoWriter(vidcrop, fourcc, hz, out_size)
+					vw = cv2.VideoWriter(vidcrop, fourcc, hz, self.img_size)
 
 					while ret:
-						vw.write((resize(crop(img, bbox), out_size, anti_aliasing=True)*255).astype(np.uint8))
+						vw.write(crop(img, bbox, self.img_size))
 
 						ret, img = cap.read()
 
@@ -105,8 +124,15 @@ class ClogData:
 		vids = glob.glob(os.path.join(self.path, '*_cropped.mp4'))
 
 
-	def load(self, index, train=True, out_size=(224,224), ret=True, toDisk=True):
-		if train: df = self.train 
+	def load(self, index, train=True, ret=True, toDisk=True):
+		"""
+		Loads the video corresponding to row index of train or test set, either
+		by retrieving cropped video from disk, or downloading and cropping.
+		If ret is True, returns a numpy array of the video.
+		If toDisk is True, saves a copy of cropped video to disk.
+		"""
+
+		if train: df = self.train
 		else: df = self.test
 
 		vid   = df.loc[index].filename
@@ -117,12 +143,15 @@ class ClogData:
 			cropped_vid = os.path.join(self.base_path, 'test', noext + '_cropped.mp4')
 
 		if os.path.exists(cropped_vid):
-			if ret:
-				return load_video(cropped_vid)
+			# LOAD FROM DISK
+			if ret: return load_video(cropped_vid)
 
 		else:
+			if !ret and !toDisk: return
+
+			# DOWNLOAD FROM AWS S3 BUCKET AND CROP
 			from tempfile import mkdtemp
-			tmp = mkdtemp()
+			tmp = mkdtemp() #temp directory for raw, un-cropped video
 
 			download(tmp, df.loc[index].url)
 
@@ -132,23 +161,30 @@ class ClogData:
 			from shutil import rmtree
 			rmtree(tmp)
 
-			imgs = np.zeros((vid.shape[0], out_size[0], out_size[1],3), dtype=np.uint8)
+			if ret:
+				imgs = np.zeros((vid.shape[0],self.img_size[0],self.img+size[1],3), dtype=np.uint8)
 
 			if toDisk:
 				fourcc = cv2.VideoWriter_fourcc(*'mp4v')
 				hz = 10 # frame rate
-				vw = cv2.VideoWriter(cropped_vid, fourcc, hz, out_size)
+				vw = cv2.VideoWriter(cropped_vid, fourcc, hz, self.img_size)
 
 			for i in range(vid.shape[0]):
-				img = vid[i,:,:,:]
-				imgs[i,:,:,:] = (resize(crop(img, bbox), out_size, anti_aliasing=True)*255).astype(np.uint8)
+				img = crop(vid[i,:,:,:], bbox, self.img_size)
 
+				if ret: imgs[i,:,:,:] = img
 				if toDisk: vw.write(np.squeeze(imgs[i,:,:,:]))
 
 			if ret:
 				return imgs
 
+
 	def load_train(self, ret=True):
+		"""Wrapper for ClogData.load() that loads entire training dataset."""
+
+		if self.size != 'full' and ret:
+			warnings.warn('Probably a bad idea to load full training set, perhaps use load_train(ret=False) to just download to disk.')
+
 		vids = []
 
 		print('LOADING TRAINING DATA...')
@@ -158,8 +194,13 @@ class ClogData:
 		return vids
 
 
+"""
+HELPER FUNCTIONS
+"""
+
+
 def download(path, url):
-	""" Downloads a file from url if it does not exist in path."""
+	"""Downloads a file from url if it does not exist in path."""
 
 	if url[0:2] == 's3':
 		s3 = boto3.client('s3')
@@ -177,14 +218,45 @@ def download(path, url):
 			urllib.request.urlretrieve(url, out)
 
 
-def crop(img, bbox): 
-	return img[bbox[0]:bbox[2], bbox[1]:bbox[3],:]
+def load_video(vid):
+	"""Loads video into NxHxWx3 numpy array."""
+
+	cap = cv2.VideoCapture(vid)
+	n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+	w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+	h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+	video = np.zeros((n,h,w,3), np.dtype('uint8'))
+
+	i = 0
+	ret = True
+
+	while (i < n  and ret):
+	    ret, video[i] = cap.read()
+	    i += 1
+
+	cap.release()
+
+	return video
+
+
+def crop(img, bbox, out_size=None):
+	"""Crops HxWx_ image to bbox, resizes if out_size is given."""
+	from skimage.transform import resize
+
+	img = img[bbox[0]:bbox[2], bbox[1]:bbox[3],:]
+
+	if out_size is not None:
+		img = resize(img, out_size, anti_aliasing=True)*255).astype(np.uint8)
+
+	return img
 
 
 def detect_ROI(img, threshold=[[9,98],[13,143],[104,255]], display=False):
 	"""
 	Detects circled ROI in img and returns bounding box
-	Threshold taken from sample code: https://github.com/drivendataorg/clog-loss-stall-catchers-benchmark/blob/e2f847d81a901d005c7f8bf75093476052c523fd/BenchmarkCodeOnly.m#L211
+	Threshold taken from sample code:
+	https://github.com/drivendataorg/clog-loss-stall-catchers-benchmark/blob/e2f847d81a901d005c7f8bf75093476052c523fd/BenchmarkCodeOnly.m#L211
 	"""
 
 	mask = np.ones(img.shape[0:2])
@@ -207,24 +279,3 @@ def detect_ROI(img, threshold=[[9,98],[13,143],[104,255]], display=False):
 			  						  linewidth=1,edgecolor='r',facecolor='none'))
 
 	return bbox
-
-def load_video(vid):
-	"""Loads video into NxHxWx3 numpy array."""
-
-	cap = cv2.VideoCapture(vid)
-	n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-	w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-	h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-	video = np.zeros((n, h, w, 3), np.dtype('uint8'))
-
-	i = 0
-	ret = True
-
-	while (i < n  and ret):
-	    ret, video[i] = cap.read()
-	    i += 1
-
-	cap.release()
-
-	return video
