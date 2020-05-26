@@ -9,6 +9,8 @@ from tqdm import tqdm
 import numpy as np
 import pandas as pd
 import cv2
+from skimage.transform import resize
+import boto3
 
 class ClogData:
 	"""
@@ -32,6 +34,9 @@ class ClogData:
 		self.train = self.train.merge(pd.read_csv(os.path.join(self.base_path, 'train_labels.csv')))
 		self.test  = pd.read_csv(os.path.join(self.base_path, 'test_metadata.csv'))
 
+		if not os.path.exists(os.path.join(self.base_path, 'test')):
+			os.mkdir(os.path.join(self.base_path, 'test'))
+
 		# IF NANO/MICRO, DOWNLOAD VIDEOS
 		if size == 'nano' or size =='micro':
 			if not os.path.exists(self.path):
@@ -54,26 +59,32 @@ class ClogData:
 			self.train = self.train.groupby(size).get_group(True)
 
 		elif size == 'full':
-			#TO DO
-			pass
+			if not os.path.exists(self.path):
+				print('DOWNLOADING AND EXTRACTING', size, 'DATA...')
+
+				os.mkdir(self.path)
+
+				self.load_train(ret=False)
+
+				self.vids = glob.glob(os.path.join(self.path, '*_cropped.mp4'))
 
 		else:
 			print("ERROR: size must be 'nano', 'micro', or 'full'")
 			raise
 
-	def crop_videos(self, out_size=(224,224), force=False):
+	def crop_videos(self, out_size=(224,224), force=False, vids=None):
 		"""Crops videos in self.vids around ROIs and resize."""
+
+		if vids is None: vids = self.vids
 
 		print('CROPPING ALL VIDEOS TO SIZE ', out_size, '...')
 
-		for vid in tqdm(self.vids, file=sys.stdout):
+		for vid in tqdm(vids, file=sys.stdout):
 			noext = os.path.splitext(vid)[0]
 
 			if noext[-7:] != 'cropped':
 				vidcrop = noext + '_cropped.mp4'
 				if not os.path.exists(vidcrop) or force:
-
-					from skimage.transform import resize
 
 					cap = cv2.VideoCapture(vid)
 
@@ -91,27 +102,58 @@ class ClogData:
 
 					cap.release()
 
-		self.vids = glob.glob(os.path.join(self.path, '*_cropped.mp4'))
+		vids = glob.glob(os.path.join(self.path, '*_cropped.mp4'))
 
-	def load(self, index, train=True):
+
+	def load(self, index, train=True, out_size=(224,224), ret=True, toDisk=True):
 		if train: df = self.train 
 		else: df = self.test
 
 		vid   = df.loc[index].filename
 		noext = os.path.splitext(vid)[0]
-		cropped_vid = os.path.join(self.path, noext + '_cropped.mp4')
+		if train:
+			cropped_vid = os.path.join(self.path, noext + '_cropped.mp4')
+		else:
+			cropped_vid = os.path.join(self.base_path, 'test', noext + '_cropped.mp4')
+
 		if os.path.exists(cropped_vid):
-			return load_video(cropped_vid)
+			if ret:
+				return load_video(cropped_vid)
 
 		else:
-			print('ERROR: CURRENTLY ONLY SUPPORTING PRE-DOWNLOADED FILES IN LOAD')
-			raise
+			from tempfile import mkdtemp
+			tmp = mkdtemp()
 
-	def load_train(self):
+			download(tmp, df.loc[index].url)
+
+			vid = load_video(os.path.join(tmp, df.loc[index].filename))
+			bbox = detect_ROI(np.squeeze(vid[0,:,:,:]))
+
+			from shutil import rmtree
+			rmtree(tmp)
+
+			imgs = np.zeros((vid.shape[0], out_size[0], out_size[1],3), dtype=np.uint8)
+
+			if toDisk:
+				fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+				hz = 10 # frame rate
+				vw = cv2.VideoWriter(cropped_vid, fourcc, hz, out_size)
+
+			for i in range(vid.shape[0]):
+				img = vid[i,:,:,:]
+				imgs[i,:,:,:] = (resize(crop(img, bbox), out_size, anti_aliasing=True)*255).astype(np.uint8)
+
+				if toDisk: vw.write(np.squeeze(imgs[i,:,:,:]))
+
+			if ret:
+				return imgs
+
+	def load_train(self, ret=True):
 		vids = []
 
-		for i in self.train.index:
-			vids.append(self.load(i, train=True))
+		print('LOADING TRAINING DATA...')
+		for i in tqdm(self.train.index):
+			vids.append(self.load(i, train=True, ret=ret))
 
 		return vids
 
@@ -119,13 +161,24 @@ class ClogData:
 def download(path, url):
 	""" Downloads a file from url if it does not exist in path."""
 
-	out = os.path.join(path, os.path.basename(url))
+	if url[0:2] == 's3':
+		s3 = boto3.client('s3')
 
-	if not os.path.exists(out):
-		urllib.request.urlretrieve(url, out)
+		pieces = url.split('/')
+		bucket = pieces[2]
+
+		s3.download_file(bucket, os.path.join(pieces[3], pieces[4]),
+			             os.path.join(path, pieces[4]))
+
+	else:
+		out = os.path.join(path, os.path.basename(url))
+
+		if not os.path.exists(out):
+			urllib.request.urlretrieve(url, out)
 
 
-def crop(img, bbox): return img[bbox[0]:bbox[2], bbox[1]:bbox[3],:]
+def crop(img, bbox): 
+	return img[bbox[0]:bbox[2], bbox[1]:bbox[3],:]
 
 
 def detect_ROI(img, threshold=[[9,98],[13,143],[104,255]], display=False):

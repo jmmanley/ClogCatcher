@@ -9,10 +9,24 @@ from tqdm import tqdm
 
 import tensorflow as tf
 from tensorflow.keras.layers import Input, Dropout, Bidirectional, LSTM, Dense
-from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
+
+def matthewcorr(labels, y_pred, threshold=0.5):
+	"""Tensorflow loss for negative Matthew's correlation coefficient."""
+
+	labels      = tf.cast(labels, tf.float32)
+	labels_pred = tf.cast(tf.greater(y_pred, threshold), tf.float32)
+
+	TP = tf.math.count_nonzero(labels_pred     * labels)
+	TN = tf.math.count_nonzero((labels_pred-1) * (labels-1))
+	FP = tf.math.count_nonzero(labels_pred     * (labels-1))
+	FN = tf.math.count_nonzero((labels_pred-1) * labels)
+
+	norm = tf.cast((TP + FP) * (TP + FN) * (TN + FP) * (TN + FN), tf.float32)
+
+	return tf.cast((TP * TN) - (FP * FN), tf.float32) / tf.sqrt(norm)
 
 
 class CNNFeatureLSTM:
@@ -51,8 +65,7 @@ class CNNFeatureLSTM:
 
 		self.model.compile(loss='binary_crossentropy',
 						   optimizer='adam',
-						   metrics=['accuracy'],
-						   callbacks=[EarlyStopping(monitor='val_loss', patience=5)],
+						   metrics=['accuracy', matthewcorr],
 						   *args, **kwargs) 
 
 
@@ -84,8 +97,11 @@ class CNNFeatureLSTM:
 
 			np.save(train_file, train_data)
 
+		self.scalers = []
 		for i in range(train_data.shape[2]):
-			train_data[:,:,i] = StandardScaler().fit_transform(train_data[:,:,i])
+			ss = StandardScaler()
+			train_data[:,:,i] = ss.fit_transform(train_data[:,:,i])
+			self.scalers.append(ss)
 
 		train_labels = np.asarray(clogData.train.stalled.values)
 
@@ -96,7 +112,29 @@ class CNNFeatureLSTM:
 			           validation_split=validate, **kwargs)
 
 
-	def predict(self, x):
+	def predict_array(self, x):
 		"""Predicts utilizing trained LSTM model."""
 
-		return self.model.predict(pad_sequences(self.cnn.predict(x).T, self.padframes).T)
+		cnn_features = pad_sequences(self.cnn.predict(x).T, maxlen=self.padframes, dtype='float').T
+		
+		if len(cnn_features.shape) < 3:
+			cnn_features = cnn_features[np.newaxis,:,:]
+
+		for i in range(cnn_features.shape[2]):
+			cnn_features[:,:,i] = self.scalers[i].transform(cnn_features[:,:,i])
+
+		return self.model.predict(cnn_features)
+
+
+	def predict(self, clogData, train=False):
+		if train: df = clogData.train 
+		else: df = clogData.test
+
+		predictions = []
+
+		for i in tqdm(df.index.values):
+			x = clogData.load(i, train=train)
+
+			predictions.append(self.predict_array(x))
+
+		return np.asarray(predictions)
