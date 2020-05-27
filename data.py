@@ -242,6 +242,7 @@ def load_video(vid):
 
 def crop(img, bbox, out_size=None):
 	"""Crops HxWx_ image to bbox, resizes if out_size is given."""
+	
 	from skimage.transform import resize
 
 	img = img[bbox[0]:bbox[2], bbox[1]:bbox[3],:]

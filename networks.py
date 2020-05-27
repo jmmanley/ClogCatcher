@@ -26,7 +26,7 @@ class CNNFeatureLSTM:
 	cnn       = pre-trained model for generating CNN features
 	cnn_dim   = output size of cnn.predict(x). Default is 1000 (i.e., output of ImageNet models)
 	dropout   = dropout rate. Default is 0.1.
-	padframes =
+	padframes = number of frames used as input, pad as necessary.
 	*args, **kwargs for model.compile() command
 
 	METHODS:
@@ -34,7 +34,7 @@ class CNNFeatureLSTM:
 	"""
 
 	def __init__(self, cnn, cnn_dim=1000, dropout=0.1, padframes=100,
-		         lstm_units=64, *args, **kwargs):
+		         lstm_units=64, dense_units=64, *args, **kwargs):
 
 		self.cnn = cnn
 		self.cnn_dim = cnn_dim
@@ -45,8 +45,8 @@ class CNNFeatureLSTM:
 		self.model.add(Input(shape=(padframes,cnn_dim)))
 		self.model.add(Bidirectional(LSTM(lstm_units)))
 		self.model.add(Dropout(dropout))
-		self.model.add(Dense(64, activation='relu'))
-		self.model.add(Dense(1,  activation='sigmoid'))
+		self.model.add(Dense(dense_units, activation='relu'))
+		self.model.add(Dense(1, activation='sigmoid'))
 
 		self.model.compile(loss='binary_crossentropy',
 						   optimizer='adam',
