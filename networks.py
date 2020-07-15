@@ -71,7 +71,7 @@ class CNNFeatureLSTM:
 
 		else:
 			n_train = len(clogData.train)
-			train_data = np.zeros((n_train, self.padframes, self.cnn_dim))
+			train_data = np.zeros((n_train, self.padframes, self.cnn_dim), dtype=np.float32)
 
 			print('FINDING CNN FEATURES...')
 
@@ -94,8 +94,8 @@ class CNNFeatureLSTM:
 		# TRAIN LSTM
 		print()
 		print('TRAINING CLASSIFICATION MODEL...')
-		self.model.fit(train_data, train_labels, epochs=epochs,
-			           validation_split=validate, **kwargs)
+		history = self.model.fit(train_data, train_labels, epochs=epochs, validation_split=validate, **kwargs)
+		return history
 
 
 	def predict_array(self, x):
@@ -148,4 +148,8 @@ def matthewcorr(labels, y_pred, threshold=0.5):
 
 	norm = tf.cast((TP + FP) * (TP + FN) * (TN + FP) * (TN + FN), tf.float32)
 
-	return tf.cast((TP * TN) - (FP * FN), tf.float32) / tf.sqrt(norm)
+	mcc = tf.cast((TP * TN) - (FP * FN), tf.float32) / tf.sqrt(norm)
+
+	return tf.cond(tf.math.is_nan(mcc), 
+		           lambda: tf.constant(-1, dtype=tf.float32), 
+		           lambda: mcc)

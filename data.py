@@ -11,6 +11,7 @@ import pandas as pd
 import cv2
 import boto3
 import warnings
+import dill
 
 class ClogData:
 	"""
@@ -81,7 +82,6 @@ class ClogData:
 			if toDisk:
 				if not os.path.exists(self.path): os.mkdir(self.path)
 
-				self.load_train(ret=False)
 				self.vids = glob.glob(os.path.join(self.path, '*_cropped.mp4'))
 
 		else:
@@ -147,7 +147,7 @@ class ClogData:
 			if ret: return load_video(cropped_vid)
 
 		else:
-			if !ret and !toDisk: return
+			if not ret and not toDisk: return
 
 			# DOWNLOAD FROM AWS S3 BUCKET AND CROP
 			from tempfile import mkdtemp
@@ -162,7 +162,7 @@ class ClogData:
 			rmtree(tmp)
 
 			if ret:
-				imgs = np.zeros((vid.shape[0],self.img_size[0],self.img+size[1],3), dtype=np.uint8)
+				imgs = np.zeros((vid.shape[0],self.img_size[0],self.img_size[1],3), dtype=np.uint8)
 
 			if toDisk:
 				fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -173,7 +173,7 @@ class ClogData:
 				img = crop(vid[i,:,:,:], bbox, self.img_size)
 
 				if ret: imgs[i,:,:,:] = img
-				if toDisk: vw.write(np.squeeze(imgs[i,:,:,:]))
+				if toDisk: vw.write(img)
 
 			if ret:
 				return imgs
@@ -192,6 +192,13 @@ class ClogData:
 			vids.append(self.load(i, train=True, ret=ret))
 
 		return vids
+
+
+	def save(self, out):
+		"""Saves ClogData object to file out."""
+
+		dill.dump(self, file = open(out, "wb"))
+
 
 
 """
@@ -225,7 +232,7 @@ def load_video(vid):
 	n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 	w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 	h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
+	
 	video = np.zeros((n,h,w,3), np.dtype('uint8'))
 
 	i = 0
@@ -248,7 +255,7 @@ def crop(img, bbox, out_size=None):
 	img = img[bbox[0]:bbox[2], bbox[1]:bbox[3],:]
 
 	if out_size is not None:
-		img = resize(img, out_size, anti_aliasing=True)*255).astype(np.uint8)
+		img = (resize(img, out_size, anti_aliasing=True)*255).astype(np.uint8)
 
 	return img
 
